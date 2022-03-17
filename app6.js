@@ -1,91 +1,49 @@
 //jshint esversion:6
 
-
-require("dotenv").config();
-// should always be on the TOP
+require('dotenv').config();
 const express = require("express");
-const bodyParser = require("body-parser");
 const ejs = require("ejs");
+const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
-// const encrypt = require("mongoose-encryption");
-// const md5 = require("md5"); 
-// const bcrypt = require("bcrypt");
-// const saltRounds = 10;
-const session = require("express-session");
+const session = require('express-session');
+const MongoStore = require('connect-mongo');
 const passport = require("passport");
-const passportLocalMongoose = require("passport-local-mongoose");
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const findOrCreate = require("mongoose-findorcreate");
-
+const passportLocalMongoose = require("passport-local-mongoose");
+const findOrCreate = require('mongoose-findorcreate');
 
 const app = express();
 
-app.set('view engine', 'ejs');
-
-app.use(bodyParser.urlencoded({extended: true}));
 app.use(express.static("public"));
+app.set('view engine', 'ejs');
+app.use(bodyParser.urlencoded({extended: true}));
 
-
-// USE session
 app.use(session({
-    secret : "Sherlock's SECRET",
-    resave : false,
-    saveUninitialized: false,
-  cookie: { secure: false }
+  secret: "Some really random stuff",
+  resave: true,
+  saveUninitialized: true,
+  store: MongoStore.create({ mongoUrl: 'mongodb://localhost/secrets' })
 }));
 
-// These 2 USE 
 app.use(passport.initialize());
 app.use(passport.session());
 
+mongoose.connect("mongodb://localhost:27017/userDB", {useNewUrlParser: true, useUnifiedTopology: true});
 
-mongoose.connect("mongodb://localhost:27017/userDB" , {useNewUrlParser : true});
-
-// If ERROR occurs then, to resolve a error
-// mongoose.set("useCreateIndex" , true);
-
-
-// userSchema in a JSON Type
-
-// const userSchema = {
-//     email : String,
-//     password : String
-// };
-
-
-// userSchema in a Object-mode created
 const userSchema = new mongoose.Schema ({
-    email : String,
-    password : String
+  email: String,
+  password: String,
+  googleId: String,
+  secret: Array
 });
 
-
 userSchema.plugin(passportLocalMongoose);
-// To HASH and SALT the passwords
-//and store them in our database
-// does a lot of heavy lifting
-
-
-
-// New Plugin
 userSchema.plugin(findOrCreate);
 
-
-// once the plugins are added only then the new model has to be created
-const User = new mongoose.model("User" , userSchema);
-
-
+const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
-// passport.serializeUser(User.serializeUser());
-// creates the COOKIE and store all the data, identity and authentication
-// passport.deserializeUser(User.deserializeUser());
-// Breaksdown the COOKIE and takes out the information inside it
 
-
-
-// Passport Documentation
-// serializing and deserializing
 passport.serializeUser(function(user, done) {
   done(null, user.id);
 });
@@ -96,142 +54,161 @@ passport.deserializeUser(function(id, done) {
   });
 });
 
-
-
-// Should be placed below the Sessions
 passport.use(new GoogleStrategy({
-
-    // Remember to change the clientID and clientSecret
-    clientID: process.env.clientID,
-    clientSecret: process.env.clientSECRET,
-
-    // URL needs to be changed
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
     callbackURL: "http://localhost:3000/auth/google/secrets",
-
-    // Add this extra line -->Google+ update
-    userProfileURL : "https://www.googleapis.com/oauth2/v3/userinfo"
+    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
   },
   function(accessToken, refreshToken, profile, cb) {
-
-    console.log(profile);
-
-    const user = new User({
-        // id : profile.id
-        username : profile.displayName,
-        password : profile.id
-
-    });
-
-
-    // Saving User's data
-    user.save(function(err){
-        if(err){
-            console.log(err);
-        }
-    });
-    
-    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+    User.findOrCreate({ username: profile.id, googleId: profile.id }, function (err, user) {
       return cb(err, user);
     });
   }
 ));
 
-
-
-app.get("/" ,  function(req,res){
+app.get("/", function(req, res) {
+  if (req.isAuthenticated()) {
+    res.redirect("/secrets");
+  } else {
     res.render("home");
-});
-app.get("/login" ,  function(req,res){
-    res.render("login");
-});
-app.get("/register" ,  function(req,res){
-    res.render("register");
+  }
 });
 
- 
-
-// This time we have a  GET REQUEST <==> SECRETS 
-// this will check the Authentication
-// if the USER is still LOGGED-IN
-// only then the SECRETS are rendered
-
-app.get("/secrets" , function(req,res){
-
-    // isAutheniticated() is a function
-    if(req.isAuthenticated()){
-        res.render("secrets");
-    }
-    else if(req.isUnauthenticated()){
-        res.redirect("/login");
-    }
-});
-
-
-app.get("/auth/google" ,
-        passport.authenticate("google" , {scope : ["profile"]})
+app.get("/auth/google",
+  passport.authenticate("google", { scope: ["profile"] })
 );
 
+app.get("/auth/google/secrets",
+  passport.authenticate("google", { failureRedirect: "/login" }),
+  function(req, res) {
+    // Successful authentication, redirect to secrets.
+    res.redirect("/secrets");
+  });
 
-app.get("/auth/google/secrets" , 
-       passport.authenticate("google" , {failureRedirect : "/login"}), 
-            function(req,res){
-              res.redirect("/secrets");
+app.get("/login", function(req, res) {
+  res.render("login");
 });
 
+app.get("/register", function(req, res) {
+  res.render("register");
+});
 
-app.post("/register" , function(req,res){
-
-    // No need to create USER data
-    // No need to STORE the values
-
-    // passport-local-mongoose  ---> will takecare of the DATA CREATION and DATA SAVING in DATABASE
-
-    User.register({username:req.body.username} , req.body.password , function(err,user){
-
-        if(err){
+app.get("/secrets",function(req,res) {
+  User.find({secret:{$ne:null}},function (err, users) {
+    if(!err) {
+      if (users) {
+        res.render("secrets", { usersWithSecrets:users });
+      } else {
         console.log(err);
-// [UserExistsError]: A user with the given username is already registered
-        res.redirect("/register");
-    }else{
-
-        passport.authenticate("local")(req,res,function(){
-            // render or redirect ? ? ?
-            res.render("secrets");
-        });
+      }
+    } else {
+      console.log(err);
     }
+  });
+});
 
+app.get("/submit", function(req, res){
+  if (req.isAuthenticated()){
+    res.render("submit");
+  } else {
+    res.redirect("/login");
+  }
+});
+
+app.get("/logout", function(req, res) {
+  req.logout();
+  res.redirect("/");
+});
+
+app.post("/register", function(req, res) {
+  User.register({username: req.body.username}, req.body.password, function(err, user) {
+    if (err) {
+      console.log(err);
+      res.redirect("/register");
+    } else {
+      passport.authenticate("local")(req, res, function() {
+        res.redirect("/secrets");
+      });
+    }
+  });
+});
+
+app.post("/login", function(req, res) {
+  const user = new User({
+    username: req.body.username,
+    password: req.body.password
+  });
+
+  req.login(user, function(err){
+    if (err) {
+      console.log(err);
+    } else {
+      passport.authenticate("local")(req, res, function(){
+        res.redirect("/secrets");
+      });
+    }
+  });
+});
+
+app.post("/submit", (function (req, res) {
+  const submittedSecret = req.body.secret;
+
+  if(req.isAuthenticated()){
+    User.findById(req.user.id, function (err, user) {
+      user.secret.push(req.body.secret);
+      user.save(function (){
+        res.redirect("/secrets");
+      });
     });
-}); 
+  } else {
+   res.redirect("/login");
+  }
+}));
 
+app.route("/submit")
+.get((req, res) => {
+  User.find({"secret": {$ne: null}}, function(err, foundUsers){
+    if (err) {
+      console.log(err);
+    } else {
+      if(foundUsers){
+        console.log(foundUsers);
+        res.render("secrets", {userSecrets: foundUsers});
+      }
+    }
+  });
+})
 
-app.post("/login" , function(req,res){
+.post(function (req, res) {
+  if(req.isAuthenticated()) {
+    User.findById(req.user.id,function (err, user) {
+      user.secret.push(req.body.secret);
+      user.save(function (){
+        res.redirect("/secrets");
+      });
+    });
 
-    // create USER --> used for COMPARISION
-    const user = new User({
-        username : req.body.username,
-        password : req.body.password
-        });
+  } else {
+   res.redirect("/login");
+  }
+});
 
-
-    // user --> created is passed onto this login function
-    req.login(user , function(err){
-        if(err){
-            console.log(err);
-        }else{
-            passport.authenticate("local")(req,res,function(){
-                res.redirect("/secrets");
-            });
+app.post("/submit/delete",function (req, res){
+  if(req.isAuthenticated()){
+    User.findById(req.user.id, function (err,foundUser){
+      foundUser.secret.splice(foundUser.secret.indexOf(req.body.secret),1);
+      foundUser.save(function (err) {
+        if(!err){
+          res.redirect("/submit");
         }
+      });
     });
+  }else {
+    res.redirect("/login");
+  }
 });
 
-
-app.get("/logout" , function(req,res){
-    req.logout();
-    res.redirect("/");
+app.listen(3000, function() {
+  console.log("Server started on port 3000");
 });
-
-
-app.listen(3000,function(req,res){
-    console.log("Sucessfully STARTED");
-}); 
